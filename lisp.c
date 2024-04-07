@@ -28,28 +28,113 @@ void add_history(char* unused) {}
 #include <readline/history.h>
 
 #endif
-enum {LVAL_NUM, LVAL_ERR}; //posibles lval types
+enum {LVAL_NUM, LVAL_ERR, LVAL_SYM, LVAL_SEXPR}; 
 enum {LERR_ZERO_DIV, LERR_BAD_OP, LERR_BAD_NUM};
 
 typedef struct lval {
     int type;
     long num;
-    int err;
+    char* err;
+    char* sym;
+    int count; 
+    struct lval** cell;
 } lval;
 
-lval lval_num(long x){
-    lval v;
-    v.type = LVAL_NUM;
-    v.num = x;
+//constructor de un numero
+lval* lval_num(long x){
+    struct lval* v = (struct lval*)malloc(sizeof (struct lval));
+    v->type = LVAL_NUM;
+    v->num = x;
     return v;
 }
 
-lval lval_err(int x){
-    lval v;
-    v.type = LVAL_ERR;
-    v.err = x;
+//constructor de un error
+lval* lval_err(char *m){
+    struct lval* v = (struct lval*)malloc(sizeof (struct lval));
+    v->type = LVAL_ERR;
+    v->err = (char*)malloc(strlen(m) + 1);
+    strcpy(v->err, m);
     return v;
 }
+
+//constructor de un simbolo
+lval* lval_sym(char* s){
+    struct lval* v = (struct lval*)malloc(sizeof(struct lval));
+    v->type = LVAL_SYM;
+    v->sym = (char*)malloc(strlen(s)+1);
+    strcpy(v->sym, s);
+    return v;
+}
+
+//constructor de un S-EXPRESION vacía
+
+lval* sexpr(void){
+    struct lval* v = (struct lval*)malloc(sizeof(struct lval));
+    v->type = LVAL_SEXPR;
+    v->count = 0;
+    v->cell = NULL;
+    return v;
+}
+
+
+void lval_delete(lval *v){
+    switch (v->type)
+    {
+    case LVAL_NUM: break;
+    case LVAL_ERR: free(v->err); break;
+    case LVAL_SYM: free(v->sym); break;
+    case LVAL_SEXPR: 
+        for(int i = 0; i < v->count; i++){
+            lval_delete(v->cell[i]);
+        }
+        free(v->cell);
+        break;
+    }
+    free(v);
+}
+
+lval* lval_read_num(mpc_ast_t* t){
+    errno = 0;
+    long x = strtol(t->contents, NULL, 10);
+    return errno != ERANGE ? lval_num(x) : lval_err("invalid number");
+}
+
+
+//esta funcion reasigna memoria a la lista
+lval* lval_add(lval* v, lval* x){
+    v->count++;
+    v->cell = (lval**)realloc(v->cell, sizeof(lval*) * v->count);
+    v->cell[v->count-1] = x;
+    return v;
+}
+
+//# TO DO 
+// print expressions 
+// eval expressions
+
+lval* lval_read(mpc_ast_t* t){
+    //si es simbolo o numero, retorna la conversión a ese tipo
+    if(strstr(t->tag, "number")){ return lval_read_num(t); }
+    if(strcat(t->tag, "symbol")){ return lval_sym(t->contents); }
+
+    //si el nodo es la raiz o una sexpr se crea una sexpr vacia
+    lval* x = NULL;
+    if(strstr(t->tag, ">")){ x = sexpr(); }
+    if(strstr(t->tag, "sexpr")){ x = sexpr(); }
+    
+    //se rellena con cualquier expresion valida que contenga
+
+    for(int i = 0; i < t->children_num; i++){
+        if(strcmp(t->children[i]->contents, "(") == 0){continue;}
+        if(strcmp(t->children[i]->contents, ")") == 0){continue;}
+        if(strcmp(t->children[i]->tag, "regex") == 0){continue;}
+        x = lval_add(x, lval_read(t->children[i]));
+    }
+}
+
+
+
+
 
 void errorASCII(){
                     
@@ -131,21 +216,22 @@ lval eval (mpc_ast_t* t){
     return x;
 }
 
-
 int main(int argc, char* argv[]){
 
     mpc_parser_t* num = mpc_new("number");
-    mpc_parser_t* operator = mpc_new("operator");
+    mpc_parser_t* symbol = mpc_new("symbol");
     mpc_parser_t* expr = mpc_new("expr");
     mpc_parser_t* noLisp = mpc_new("noLisp");
+    mpc_parser_t* sexpr = mpc_new("sexpr");
 
     mpca_lang(MPCA_LANG_DEFAULT, 
     "                                                    \
      number : /-?[0-9]+/;                                \
-     operator : '+' | '-' | '*' | '/';                   \
+     symbol : '+' | '-' | '*' | '/';                     \
      expr    : <number> |  '(' <operator> <expr>+ ')';   \
-     noLisp  : /^/ <operator> <expr>+ /$/;               \
-    ", num, operator, expr, noLisp);
+     sexpr   :  <number> | <symbol> | <sexpr> ;          \
+     noLisp  : /^/ <expr>* /$/;                          \
+    ", num, symbol, sexpr ,expr, noLisp);
 
 
     puts("noLisp version 0.0.1");
@@ -166,7 +252,7 @@ int main(int argc, char* argv[]){
         }
         free(input);
     }
-    mpc_cleanup(4, num, operator, expr, noLisp);
+    mpc_cleanup(5, num, symbol, sexpr, expr, noLisp);
     return 0;
 }
 
