@@ -28,7 +28,7 @@ void add_history(char* unused) {}
 #include <readline/history.h>
 
 #endif
-enum {LVAL_NUM, LVAL_ERR, LVAL_SYM, LVAL_SEXPR}; 
+enum {LVAL_NUM, LVAL_ERR, LVAL_SYM, LVAL_SEXPR, LVAL_QEXPR}; 
 enum {LERR_ZERO_DIV, LERR_BAD_OP, LERR_BAD_NUM};
 
 typedef struct lval {
@@ -76,8 +76,19 @@ lval* sexpr(void){
     return v;
 }
 
-void lval_print(lval* v);
+lval* qexpr(void){
+    lval* v = (lval*)malloc(sizeof(lval));
+    v->type = LVAL_QEXPR;
+    v->count = 0;
+    v->cell = NULL;
+    return v;
+}
 
+void lval_print(lval* v);
+lval* lval_eval_sexpr(lval* v);
+lval* lval_pop(lval* v, int i);
+lval* lval_take(lval* v, int i);
+lval* builtin_op(lval* v, char* op);
 
 void lval_delete(lval *v){
     switch (v->type)
@@ -85,6 +96,7 @@ void lval_delete(lval *v){
     case LVAL_NUM: break;
     case LVAL_ERR: free(v->err); break;
     case LVAL_SYM: free(v->sym); break;
+    case LVAL_QEXPR:
     case LVAL_SEXPR: 
         for(int i = 0; i < v->count; i++){
             lval_delete(v->cell[i]);
@@ -110,9 +122,6 @@ lval* lval_add(lval* v, lval* x){
     return v;
 }
 
-//# TO DO 
-// print expressions 
-// eval expressions
 
 lval* lval_read(mpc_ast_t* t){
     //si es simbolo o numero, retorna la conversión a ese tipo
@@ -121,14 +130,17 @@ lval* lval_read(mpc_ast_t* t){
 
     //si el nodo es la raiz o una sexpr se crea una sexpr vacia
     lval* x = NULL;
-    if(strcmp(t->tag, ">") == 0){ x = sexpr(); }
+    if(strcmp(t->tag, ">") == 0){ x = qexpr(); }
     if(strstr(t->tag, "sexpr")){ x = sexpr(); }
+    if(strstr(t->tag, "qexpr")){x = qexpr();}
     
     //se rellena con cualquier expresion valida que contenga
 
     for(int i = 0; i < t->children_num; i++){
         if(strcmp(t->children[i]->contents, "(") == 0){continue;}
         if(strcmp(t->children[i]->contents, ")") == 0){continue;}
+        if(strcmp(t->children[i]->contents, "{") == 0){continue;}
+        if(strcmp(t->children[i]->contents, "}") == 0){continue;}
         if(strcmp(t->children[i]->tag, "regex") == 0){continue;}
         x = lval_add(x, lval_read(t->children[i]));
     }
@@ -157,7 +169,15 @@ void lval_print(lval* v){
         break;
         case LVAL_SYM: printf("%s", v->sym);
         break;
-        case LVAL_SEXPR: lval_print_expr(v, '(', ')');
+        case LVAL_SEXPR:
+        
+        lval_print_expr(v, '(', ')');
+        puts("Esto es una S-Expr!!!!");
+        break;
+        case LVAL_QEXPR: 
+        lval_print_expr(v, '{', '}');
+        
+        puts("esto es una Q-Expr!!!!!");
         break;
     }
 }
@@ -173,92 +193,133 @@ void errorASCII(){
                     printf("                ||     || \n");
 }
 
-//void lval_print_err(lval v){
-//    switch (v.type)
-//    {
-//    case LVAL_NUM:
-//        printf("%li", v.num);
-//        break;
-//    case LVAL_ERR:
-//        if(v->err == LERR_BAD_NUM){
-//            errorASCII();
-//            printf("ERROR: --bad-number--\nYou may have entered a very long number.");
-//        }else if(v.err == LERR_BAD_OP){
-//            errorASCII();
-//            printf("ERROR: --bad-op--");
-            
-//        }else if(v.err == LERR_ZERO_DIV){
-//            errorASCII();
-//            printf("ERRO: --zero-div--\nZero div is not possible.");
-            
-
-//        }
-//        break;
-
-//    default:
-//       break;
-//    }
-//}
 
 void lval_println(lval* v){
     lval_print(v);
     putchar('\n');
 }
 
+lval* lval_eval(lval* v){
+    if(v->type == LVAL_SEXPR){
+        return lval_eval_sexpr(v);
+    }
+    return v;
+}
 
 
-//arbol abstracto 
+lval* lval_eval_sexpr(lval* v){
 
-//lval eval_op(lval x, char* op, lval y) {
-//
-//  if (x.type == LVAL_ERR){ return x; }
-//  if (y.type == LVAL_ERR){ return y; }
-//
-//  if (strcmp(op, "+") == 0) { return lval_num(x.num + y.num); }
-//  if (strcmp(op, "-") == 0) { return lval_num(x.num - y.num); }
-//  if (strcmp(op, "*") == 0) { return lval_num(x.num * y.num); }
-//  if (strcmp(op, "/") == 0) {
-//     return y.num == 0 ? lval_err(LERR_ZERO_DIV) : lval_num(x.num / y.num); }
-//  return lval_err(LERR_BAD_OP);
-//}
+    //evaluando los hijos
+    for(int i = 0; i < v->count; i++){
+        v->cell[i] = lval_eval(v->cell[i]);
+    }
 
-//lval* eval (mpc_ast_t* t){
-//    if(strstr(t->tag, "number")){
-//        errno = 0;
-//        long x = strtol(t->contents, NULL, 10);
-//        return errno != ERANGE ? lval_num(x) : lval_err(LERR_BAD_OP);
- //   }
+    //checkeo de errores
+    for(int i = 0; i < v->count; i++){
+        if(v->cell[i]->type == LVAL_ERR){
+            return lval_take(v, i);
+        }
+    }
 
-//    char* operator = t->children[1]->contents;
+    //expresión vacia
+    if(v->count == 0){
+        return v;
+    }
 
-//    lval x = eval(t->children[2]);
+    //una sola expresión
+    if(v->count == 1){
+        return lval_take(v, 0);
+    }
 
-//    int i = 3;
-//    while(strstr(t->children[i]->tag, "expr")){
-//        x = eval_op(x, operator, eval(t->children[i]));
-//        i++;
-//    }
-//    return x;
-//}
+    //asegurandose que el primer elemento es un simbolo
+    lval* f = lval_pop(v, 0);
+    if(f->type != LVAL_SYM){
+        lval_delete(f);
+        lval_delete(v);
+        return lval_err("S-Expression debe empezar con un simbolo!!!");
+    }
+
+    //llama al operador
+    lval* result = builtin_op(v, f->sym);
+    lval_delete(f);
+    return result;
+}
+
+lval* lval_pop(lval* v, int i){
+    lval* x = v->cell[i];
+    memmove(&v->cell[i], &v->cell[i+1], sizeof(lval*) * v->count-i-1);
+    v->count--;
+    return x;
+}
+
+lval* lval_take(lval* v, int i){
+    lval* x = lval_pop(v, i);
+    lval_delete(v);
+    return x;
+}
+
+lval* builtin_op(lval* a, char* op){
+    for (int i = 0; i < a->count; i++)
+    {
+        if(a->cell[i]->type != LVAL_NUM){
+            lval_delete(a);
+            return lval_err("No se puede operar algo que no es un numero!!!");
+        }
+    }
+
+    //saca el primer elemento
+    lval* x = lval_pop(a, 0);
+    //si no hay argumentos o restas, se aplica negacion unaria
+    if(strcmp(op, "-") == 0 && a->count == 0){
+        x->num = -x->num;
+    }
+
+    while(a->count > 0){
+        lval* y = lval_pop(a, 0);
+        if(strcmp(op, "+") == 0){
+            x->num += y->num;
+        }
+        if(strcmp(op, "-") == 0){
+            x->num -= y->num;
+        }
+        if(strcmp(op, "*") == 0){
+            x->num *= y->num;
+        }
+        if(strcmp(op, "/") == 0){
+            if(y->num == 0){
+                lval_delete(x);
+                lval_delete(y);
+                x = lval_err("La división por 0 no está permitida!!!");
+                break;
+            }
+            x->num /= y->num;
+        }
+        lval_delete(y);
+    }
+    lval_delete(a);
+    return x;
+}
+
 
 int main(int argc, char* argv[]){
 
     mpc_parser_t* num = mpc_new("number");
     mpc_parser_t* symbol = mpc_new("symbol");
     mpc_parser_t* sexpr = mpc_new("sexpr");
+    mpc_parser_t* qexpr = mpc_new("qexpr");
     mpc_parser_t* expr = mpc_new("expr");
-
     mpc_parser_t* noLisp = mpc_new("noLisp");
 
 
     mpca_lang(MPCA_LANG_DEFAULT, 
-    "                                                    \
-     number : /-?[0-9]+/;                                \
-     symbol : '+' | '-' | '*' | '/';                     \
-     sexpr    : '(' <expr>* ')' ;                          \
-     expr   :  <number> | <symbol> | <sexpr> ;          \
-     noLisp  : /^/ <expr>* /$/;                          \
-    ", num, symbol, expr ,sexpr, noLisp);
+    "                                                   \
+     number : /-?[0-9]+/;                               \
+     symbol : '+' | '-' | '*' | '/';                    \
+     sexpr    : '(' <expr>* ')' ;                       \
+     qexpr  :   '{' <expr>* '}';                        \
+     expr   :  <number> | <symbol> | <sexpr> | <qexpr>;          \
+     noLisp  : /^/ <expr>* /$/;                         \
+    ", num, symbol, expr, qexpr, sexpr, noLisp);
 
 
     puts("noLisp version 0.0.1");
@@ -280,7 +341,7 @@ int main(int argc, char* argv[]){
         }
         free(input);
     }
-    mpc_cleanup(5, num, symbol, expr, sexpr, noLisp);
+    mpc_cleanup(6, num, symbol, expr, qexpr, sexpr, noLisp);
     printf("????");
     return 0;
 }
